@@ -1,0 +1,4 @@
+e2e-out/
+_site/
+node_modules/
+*.log

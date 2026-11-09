@@ -1,0 +1,44 @@
+# GGOT Factory Desk → GitHub Pages (HTTPS) 배포. 수동 실행 전용(자동 공개 배포 없음).
+# 사전 설정: 저장소 Settings → Pages → Source: "GitHub Actions". 이 파일이 기본 브랜치(main)에 있어야 Actions 탭에서 실행할 수 있다.
+# 게시되는 것은 앱 코드(ggot-factory의 index.html/style.css/manifest/sw.js/src/icons)뿐이며, 기록 데이터는 각 기기에만 있다.
+name: Deploy GGOT Factory Desk (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: ggot-factory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Unit tests
+        run: npm test
+      - name: Build static site
+        run: |
+          mkdir -p _site/src
+          cp index.html style.css manifest.webmanifest sw.js _site/
+          cp -r icons _site/
+          for f in src/*.js; do case "$f" in *.test.js) ;; *) cp "$f" _site/src/ ;; esac; done
+          # 배포마다 서비스워커 캐시 버전을 바꿔 아이폰에 새 버전 안내가 뜨게 한다
+          sed -i "s/const VERSION = '\([^']*\)'/const VERSION = '\1+${GITHUB_SHA::7}'/" _site/sw.js
+          grep "const VERSION" _site/sw.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ggot-factory/_site
+      - id: deployment
+        uses: actions/deploy-pages@v4

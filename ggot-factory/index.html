@@ -1,1 +1,44 @@
-<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GGOT Factory Desk</title><link rel="stylesheet" href="style.css"><body><header><b>GGOT <small>FACTORY DESK</small></b><select id="author"><option>Tony</option><option>金彤</option></select></header><div class="notice">이 기기에 저장됩니다 · 자동 공동 동기화 미연결 / 本机保存</div><nav><button id="new">＋ 새 업체 / 新增</button><button id="list">업체 목록</button><button id="compare">비교표</button><button id="export">사진 포함 백업</button><button id="import">백업 합치기</button><button id="csv">CSV</button></nav><p id="status" role="status"></p><main id="app"></main><input id="restore" type="file" accept="application/json" hidden><script type="module" src="src/app.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<title>GGOT Factory Desk</title>
+<meta name="theme-color" content="#7B4DFF">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="GGOT Desk">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <b class="logo">GGOT <small>FACTORY DESK</small></b>
+  <div class="hdr-r">
+    <select id="author" aria-label="작성자"><option>Tony</option><option>金彤</option></select>
+    <button type="button" id="lang">中文</button>
+  </div>
+</header>
+<div class="notice" data-t="이 기기에만 저장 · 자동 공동 동기화 없음">이 기기에만 저장 · 자동 공동 동기화 없음</div>
+<nav>
+  <button type="button" data-nav="new" data-t="새 업체">새 업체</button>
+  <button type="button" data-nav="list" data-t="목록">목록</button>
+  <button type="button" data-nav="compare" data-t="비교표">비교표</button>
+  <button type="button" data-nav="backup" data-t="백업">백업</button>
+  <button type="button" data-nav="status" data-t="상태">상태</button>
+</nav>
+<div id="savebar" class="savebar" role="alert" hidden><span class="msg"></span><button type="button" data-act="retry" data-t="다시 저장">다시 저장</button><button type="button" data-act="backup" data-t="백업 만들기">백업 만들기</button></div>
+<div id="updatebar" class="updatebar" hidden><span data-t="새 버전 준비됨">새 버전 준비됨</span><button type="button" data-t="지금 적용">지금 적용</button></div>
+<p id="status" role="status" aria-live="polite"></p>
+<main id="app"><noscript>JavaScript가 필요합니다.</noscript></main>
+<div id="viewer" class="viewer" role="dialog" aria-modal="true" hidden></div>
+<div id="modal" class="modal" role="dialog" aria-modal="true" hidden></div>
+<script type="module" src="src/app.js"></script>
+</body>
+</html>

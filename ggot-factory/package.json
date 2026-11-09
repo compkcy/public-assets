@@ -1,1 +1,13 @@
-{"name":"ggot-factory","version":"0.1.0","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test"}}
+{
+  "name": "ggot-factory",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "check": "node --check src/app.js && node --check src/model.js && node --check src/store.js && node --check src/i18n.js && node --check sw.js",
+    "e2e": "node scripts/e2e.cjs",
+    "icons": "node scripts/make-icons.cjs"
+  }
+}

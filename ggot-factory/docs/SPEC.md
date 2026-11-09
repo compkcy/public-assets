@@ -1,7 +1,7 @@
 # 요구사항 및 확장 모델
 
 ## 첫 화면
-큰 새 업체, 사진부터 등록, 최근 업체. 현장에서는 타이핑 최소. 업체 필수 이름 없음. 현재 임시 업체에 사진을 넣는 방식이며 별도 미분류 사진함은 후속.
+큰 새 업체, 사진부터 등록, 최근 업체. 현장에서는 타이핑 최소. 업체 필수 이름 없음. 사진부터 등록은 임시 업체에 사진을 넣는 방식. 미연결 사진함(0.2)은 저장 실패·업체 삭제로 남은 사진의 복구용.
 
 ## 제품/질문
 제품: 선크림·미스트·세럼·젤·크림·버블·마스크팩·기타.
@@ -12,7 +12,7 @@
 보습: 지속시간 평가, 가벼운/고보습 비교 샘플.
 쿨링: 성분과 피부 온도 평가 구분.
 장벽: 완제품 평가 지표.
-질문마다 답변+증빙단계, 다음 버전은 해당 없음과 개별 메모/사진 연결 추가. 질문 숨겨져도 기존 답변 삭제 금지.
+미스트·세럼·젤·크림·버블·마스크팩 종류별 질문(0.2 추가). 질문마다 답변+증빙단계, '해당 없음'(0.2 추가). 개별 메모/사진 연결은 후속. 질문 숨겨져도 기존 답변 삭제 금지.
 
 ## 업체/견적/샘플
 Supplier UUID, createdAt/updatedAt, author, name, booth, contacts[], wechatStatus, priority, followup.
@@ -21,7 +21,7 @@ Quote UUID + productId, quantity, currency, unitPrice, tax, packaging, filling, 
 Sample UUID + productId, receiptState, batch, formulaNumber, testNotes.
 Photo UUID + supplierId/productId/questionId nullable, category, note, favorite, mime, dimensions, storageRef.
 Task UUID + supplierId, owner, dueDate, status. 담당자/정식 견적/샘플 테이블은 후속 구현.
-현재 schemaVersion=1 suppliers 배열 내 products/photos로 저장. 이관 시 버전 migration과 원본 백업을 먼저 추가.
+백업 파일은 schemaVersion=1 (suppliers 배열 내 products/photos, 사진 data URL 포함). 기기 저장소는 IndexedDB v2: 메타데이터(state.suppliers)와 사진(photos/thumbs) 분리. v1→v2 이관 시 원본 전체를 state['backup-before-v2']에 먼저 보관(0.2 구현).
 
 ## 비교
 회사 단위가 아니라 제품·견적 조건 단위. MOQ 범주와 정확값 분리. 가격 통화/수량/부대비용 미확인 시 최저가 순위 금지. 원료 자료와 완제품 시험 구분. 미확인=불가 아님. 임의 AI 점수 금지.

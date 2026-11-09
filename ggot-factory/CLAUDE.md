@@ -2,7 +2,7 @@
 사용자는 Tony와 金彤. 아이폰 Safari, Windows 데스크톱. 박람회 현장 빠른 입력 우선. 설명만 하지 말고 이 프로젝트를 실행하고 실제로 개선하라.
 
 ## 기존 구현
-무의존성 ES modules + Node 정적 서버, IndexedDB 기기별 저장. npm start, npm test. 외부 API 키 없음. 실제 배포·실기기 검증·공동 로그인은 미완료다. 구현되지 않은 기능을 완료로 표시하지 않는다.
+무의존성 ES modules + Node 정적 서버, IndexedDB 기기별 저장(v2: 메타/사진 분리), PWA(서비스워커 cache-first), 한/중 UI. npm start, npm test, npm run e2e(Playwright). 외부 API 키 없음. GitHub Pages 수동 배포 워크플로 준비됨(실행은 사용자가). 실제 배포 실행·아이폰 실기기 검증·공동 로그인은 미완료다. 검증 현황은 docs/VERIFICATION.md. 구현되지 않은 기능을 완료로 표시하지 않는다.
 
 ## 절대 보존할 흐름
 새 업체 → 이름 또는 위챗 QR/명함 사진 → 제품별 체크 → 참고사진 → 완료/다음 업체 → 자동 비교표.

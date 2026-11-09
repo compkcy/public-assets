@@ -1,0 +1,18 @@
+{
+  "id": "./",
+  "name": "GGOT Factory Desk",
+  "short_name": "GGOT Desk",
+  "description": "박람회 공장·제품 기록 (이 기기에만 저장)",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#7B4DFF",
+  "theme_color": "#7B4DFF",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
