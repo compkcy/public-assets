@@ -118,7 +118,7 @@ h3 small { color: var(--muted); font-weight: 400; font-size: 13px; }
 table.cmp { border-collapse: collapse; width: 100%; background: #fff; font-size: 14px; }
 .cmp th, .cmp td { border: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; word-break: keep-all; overflow-wrap: normal; }
 .cmp td { min-width: 4.5em; }
-.cmp td:nth-child(13) { min-width: 10.5em; } /* 응답 현황 */
+.cmp td.wide { min-width: 11em; }
 .cmp th { background: var(--purple); color: #fff; position: sticky; top: 0; white-space: nowrap; }
 .cmp tbody tr { cursor: pointer; }
 .cmp tbody tr:hover { background: #f4f0ff; }
@@ -169,3 +169,16 @@ dl.info dd { margin: 2px 0 0; word-break: break-word; }
   .grid { grid-template-columns: repeat(3, 1fr); }
   .filters { grid-template-columns: repeat(8, 1fr); }
 }
+
+/* 0.3: 업종·신뢰 확인 */
+.tag.sec { background: #efeaff; color: var(--purple-d); font-weight: 600; vertical-align: middle; }
+.tag.warnTag { background: #ffe1e1; color: #7a0000; }
+.question.trust { border-left-color: #2e7d32; }
+.question.trust.caution { border-left-color: var(--danger); background: #fff6f6; }
+.question.trust.unknown { border-left-color: #c9c4d9; }
+details > summary { list-style: none; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary h3 { margin: 0; }
+details > summary h3::before { content: '▸ '; color: var(--purple); }
+details[open] > summary h3::before { content: '▾ '; }
+.hero .wide { min-height: 52px; font-weight: 600; grid-column: 1 / -1; }

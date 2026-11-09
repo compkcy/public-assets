@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { dictionary } from './i18n.js';
-import { PRODUCT_TYPES, EFFECTS, ANSWERS, EVIDENCE } from './questions.js';
+import { PRODUCT_TYPES, EFFECTS, ANSWERS, EVIDENCE, PACK_TYPES, MATERIALS, LINES, SECTORS, TRUST_STATES, RED_FLAGS } from './questions.js';
 
 const root = new URL('../', import.meta.url);
 const read = p => fs.readFileSync(new URL(p, root), 'utf8');
@@ -17,7 +17,7 @@ test('모든 UI 문구와 선택지에 중국어 번역이 있음', () => {
     assert.ok(m, list);
     [...m[1].matchAll(/'([^']+)'/g)].forEach(x => keys.add(x[1]));
   }
-  [...PRODUCT_TYPES, ...EFFECTS, ...ANSWERS, ...EVIDENCE].forEach(k => keys.add(k));
+  [...PRODUCT_TYPES, ...EFFECTS, ...ANSWERS, ...EVIDENCE, ...PACK_TYPES, ...MATERIALS, ...LINES, ...SECTORS, ...TRUST_STATES, ...RED_FLAGS].forEach(k => keys.add(k));
   const missing = [...keys].filter(k => !(k in dictionary));
   assert.deepEqual(missing, []);
 });

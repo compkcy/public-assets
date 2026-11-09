@@ -95,3 +95,39 @@ test('uuid 대체 구현 (HTTPS가 아닌 LAN 테스트 주소용)', () => {
     assert.match(uuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   } finally { Object.defineProperty(globalThis.crypto, 'randomUUID', { value: orig, configurable: true }); }
 });
+
+import { normalizeSupplier, trustStats } from './model.js';
+import { PACK_TYPES, visibleTrust } from './questions.js';
+
+test('0.3: 기존 "용기 업체"는 업종으로 이동, 기존 제품은 화장품 구분', () => {
+  const s = normalizeSupplier({ id: 'v', name: 'V', kind: '용기 업체', products: [{ id: 'p', types: ['선크림'], effects: [], answers: { spf: { answer: '있음' } } }], photos: [] }, () => ({}));
+  assert.equal(s.sector, '용기·패키지'); assert.equal(s.kind, '미확인');
+  assert.equal(s.products[0].line, '화장품'); assert.equal(s.products[0].answers.spf.answer, '있음');
+});
+
+test('0.3: 용기·패키지 제품 질문 — 화장품 질문과 섞이지 않음', () => {
+  const ids = p => visibleQuestions(p).map(q => q[0]);
+  const pack = { line: '패키지', types: ['펌프 용기'], effects: ['진정'], answers: {} };
+  assert.ok(ids(pack).includes('pk_mold') && ids(pack).includes('pk_pump'));
+  assert.ok(!ids(pack).includes('formula') && !ids(pack).includes('calm'), '화장품·효능 질문 제외');
+  assert.ok(!ids({ line: '화장품', types: ['선크림'], effects: [] }).some(id => id.startsWith('pk_')));
+  for (const t of PACK_TYPES.filter(x => x !== '기타 패키지')) assert.ok(questions.some(q => q[1] === t), t + ' 전용 질문');
+});
+
+test('0.3: 신뢰 확인 — 개수만 집계, 업종별 항목, 알 수 없는 위험 신호 무시', () => {
+  const cos = { sector: '화장품 OEM·ODM', trust: { license: '확인', payment: '주의', bogus: '확인' }, flags: ['계좌명이 회사명과 다름', '<script>'] };
+  const st = trustStats(cos);
+  assert.equal(st.확인, 1); assert.equal(st.주의, 1); assert.equal(st.total, visibleTrust(cos).length);
+  assert.deepEqual(st.flags, ['계좌명이 회사명과 다름']);
+  assert.ok(!visibleTrust({ sector: '용기·패키지' }).some(t => t[0] === 'prodlicense'), '용기 업체에는 화장품 생산허가증 항목 없음');
+});
+
+test('0.3: 업종·구분·위험신호 필터', () => {
+  const a1 = { id: 'a1', name: 'Pack', sector: '용기·패키지', flags: [], products: [{ id: 'x', line: '패키지', types: ['튜브'], effects: [], answers: {} }], photos: [] };
+  const a2 = { id: 'a2', name: 'Cos', sector: '화장품 OEM·ODM', flags: ['답변이 계속 바뀜'], products: [{ id: 'y', line: '화장품', types: ['크림'], effects: [], answers: {} }], photos: [] };
+  const rows = compareRows([a1, a2]);
+  assert.equal(filterRows(rows, { sector: '용기·패키지' }).length, 1);
+  assert.equal(filterRows(rows, { line: '화장품' }).length, 1);
+  assert.equal(filterRows(rows, { noFlags: true })[0].s.id, 'a1');
+  assert.equal(filterRows(rows, { type: '튜브' }).length, 1);
+});

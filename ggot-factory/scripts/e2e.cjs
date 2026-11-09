@@ -119,6 +119,41 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await A.screenshot({ path: path.join(OUT, 'm390-edit-zh.png') });
   await A.click('#lang');
 
+  // 용기·패키지 업체 + 신뢰 확인
+  console.log('1b. 용기·패키지 업체 · 신뢰 확인');
+  await A.click('nav [data-nav=list]');
+  await A.click('[data-act=newPack]');
+  await A.waitForFunction(() => window.__ggot.suppliers.length === 3);
+  check('용기 업체 등록 → 업종·제품 구분 자동 설정', await A.getAttribute('[data-key="s.sector"][data-value="용기·패키지"]', 'aria-pressed') === 'true' && await A.getAttribute('[data-key="p.line"][data-value="패키지"]', 'aria-pressed') === 'true');
+  check('용기 제품은 효능 대신 소재, 화장품 질문 없음', !(await A.$('[data-key="p.effects"]')) && !!(await A.$('[data-key="p.materials"]')) && !(await A.$('[data-key="a.formula"]')) && !!(await A.$('[data-key="a.pk_mold"]')));
+  await A.fill('[data-field="s.name"]', '합성 용기 공장');
+  await A.click('[data-key="p.types"][data-value="에어리스"]');
+  await A.click('[data-key="p.materials"][data-value="PP"]');
+  check('에어리스 선택 → 에어리스 질문', !!(await A.$('[data-key="a.pk_airless"]')));
+  await A.click('[data-key="a.pk_mold"][data-value="있음"]');
+  await A.click('#trustBox summary');
+  check('신뢰 확인: 용기 업체에는 생산허가증 항목 없음', !(await A.$('[data-key="t.prodlicense"]')) && !!(await A.$('[data-key="t.license"]')));
+  await A.click('[data-key="t.license"][data-value="확인"]');
+  check('신뢰 확인 기록 후 펼친 상태 유지', await A.evaluate(() => document.querySelector('#trustBox').open));
+  await A.click('[data-key="t.payment"][data-value="주의"]');
+  await A.click('[data-key="s.flags"][data-value="계좌명이 회사명과 다름"]');
+  await A.fill('[data-field="s.decisionNote"]', '금형 보유, 계좌명 불일치로 보류');
+  await A.click('[data-key="s.priority"][data-value="보류"]');
+  await A.evaluate(() => window.__ggot.flush());
+  const pk = await A.evaluate(() => window.__ggot.suppliers[2]);
+  check('신뢰 확인·위험 신호·판단 근거 저장', pk.trust.license === '확인' && pk.trust.payment === '주의' && pk.flags[0] === '계좌명이 회사명과 다름' && pk.decisionNote.includes('계좌명'));
+  check('신뢰 확인 화면 가로 넘침 없음 (390)', await noOverflow(A));
+  await A.locator('#trustBox').scrollIntoViewIfNeeded(); await A.screenshot({ path: path.join(OUT, 'm390-trust.png') });
+  await A.evaluate(() => scrollTo(0, 0)); await A.locator('[data-key="p.line"]').first().scrollIntoViewIfNeeded(); await A.screenshot({ path: path.join(OUT, 'm390-pack.png') });
+  await A.click('#lang');
+  check('용기·신뢰 확인 중국어 표시', (await A.textContent('#app')).includes('收款户名与公司名不一致') && (await A.textContent('#app')).includes('真空瓶'));
+  await A.click('[data-act=copyZh]');
+  const clip2 = await A.evaluate(() => navigator.clipboard.readText());
+  check('용기 중국어 문의 복사 (미응답만)', clip2.includes('贵司包材') && clip2.includes('确认过真空瓶') && !clip2.includes('有现成公模吗'), clip2.slice(0, 80));
+  await A.click('#lang');
+  await A.click('nav [data-nav=list]');
+  await A.click(`[data-open="${after[1].id}"]`);
+
   // 저장 실패 시 다음 업체 차단
   console.log('2. 저장 실패 처리');
   dialogs.length = 0;
@@ -126,7 +161,7 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await A.fill('[data-field="s.contact"]', '왕 경리');
   await A.click('[data-act=next]');
   await A.waitForTimeout(500);
-  check('저장 실패 시 다음 업체로 이동 안 함', (await A.evaluate(() => window.__ggot.suppliers.length)) === 2 && (await A.inputValue('[data-field="s.name"]')).includes('합성테스트'));
+  check('저장 실패 시 다음 업체로 이동 안 함', (await A.evaluate(() => window.__ggot.suppliers.length)) === 3 && (await A.inputValue('[data-field="s.name"]')).includes('합성테스트'));
   check('저장 실패 경고줄 + 저장공간 안내', await A.isVisible('#savebar') && (await A.textContent('#savebar')).includes('저장공간'));
   check('실패 알림 표시', dialogs.some(m => m.includes('넘어가지 않았습니다')));
   await A.screenshot({ path: path.join(OUT, 'm390-save-failed.png') });
@@ -143,7 +178,7 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   const [dl] = await Promise.all([A.waitForEvent('download'), A.click('[data-act=downloadBackup]')]);
   const backupPath = path.join(tmp, dl.suggestedFilename()); await dl.saveAs(backupPath);
   const bk = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-  check('백업 파일: schemaVersion 1, 사진 data 포함', bk.schemaVersion === 1 && bk.suppliers.flatMap(s => s.photos).length === 3 && bk.suppliers.every(s => s.photos.every(p => p.data.startsWith('data:image/jpeg'))));
+  check('백업 파일: schemaVersion 1, 사진 data 포함', bk.schemaVersion === 1 && bk.suppliers.flatMap(s => s.photos).length === 3 && bk.suppliers.length === 3 && bk.suppliers.every(s => s.photos.every(p => p.data.startsWith('data:image/jpeg'))));
 
   // ── 4. 데스크톱 1440 새 브라우저(기기 B)
   const ctxB = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
@@ -158,7 +193,7 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await B.click('nav [data-nav=backup]');
   dialogs.length = 0;
   await B.setInputFiles('input[data-import]', backupPath);
-  await B.waitForFunction(() => window.__ggot.suppliers.length === 3);
+  await B.waitForFunction(() => window.__ggot.suppliers.length === 4);
   check('복원/합치기: B 기록 유지 + A 기록 추가', (await B.evaluate(() => window.__ggot.suppliers.map(s => s.name))).includes('金彤 합성 업체'));
   const bS = await B.evaluate(() => window.__ggot.suppliers.find(s => s.name.startsWith('합성테스트')));
   check('복원 후 답변 대조 일치', JSON.stringify(bS.products) === JSON.stringify(after[1].products));
@@ -171,7 +206,7 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await B.click('nav [data-nav=backup]');
   await B.setInputFiles('input[data-import]', backupPath);
   await B.waitForTimeout(500);
-  check('같은 백업 재가져오기 → 중복 없음', (await B.evaluate(() => window.__ggot.suppliers.length)) === 3);
+  check('같은 백업 재가져오기 → 중복 없음', (await B.evaluate(() => window.__ggot.suppliers.length)) === 4);
   // 충돌: B에서 A 기록 수정 후 A 원본 다시 가져오기 → 사본 보존
   await B.click('nav [data-nav=list]');
   await B.click(`[data-open="${bS.id}"]`);
@@ -179,14 +214,20 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await B.evaluate(() => window.__ggot.flush());
   await B.click('nav [data-nav=backup]');
   await B.setInputFiles('input[data-import]', backupPath);
-  await B.waitForFunction(() => window.__ggot.suppliers.length === 4);
+  await B.waitForFunction(() => window.__ggot.suppliers.length === 5);
   const names = await B.evaluate(() => window.__ggot.suppliers.map(s => s.name + '|' + s.booth));
   check('충돌 시 기존(B 수정본) 유지 + 가져온 사본 보존', names.some(n => n.endsWith('|B에서 수정')) && names.some(n => n.includes('(가져온 사본)|9.2 B15')));
 
   // 비교표 + CSV
   console.log('4. 비교표·CSV');
   await B.click('nav [data-nav=compare]');
-  check('비교표: 제품 단위 행', (await B.$$('table.cmp tbody tr')).length === 6);
+  check('비교표: 제품 단위 행', (await B.$$('table.cmp tbody tr')).length === 7);
+  await B.selectOption('[data-cmp=sector]', '용기·패키지');
+  check('필터: 업종=용기·패키지', (await B.$$('table.cmp tbody tr')).length === 1 && (await B.textContent('table.cmp')).includes('계좌명이 회사명과 다름'));
+  await B.selectOption('[data-cmp=sector]', '');
+  await B.check('[data-cmp=noFlags]');
+  check('필터: 위험 신호 없는 업체만', (await B.$$('table.cmp tbody tr')).length === 6);
+  await B.uncheck('[data-cmp=noFlags]');
   await B.selectOption('[data-cmp=type]', '크림');
   check('필터: 제품 종류=크림', (await B.$$('table.cmp tbody tr')).length === 2);
   await B.selectOption('[data-cmp=type]', '');

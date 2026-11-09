@@ -1,5 +1,5 @@
 // 순수 데이터 로직: 검증·병합·사진 분리·비교 행·CSV. DOM/IndexedDB에 의존하지 않아 Node에서 테스트한다.
-import { visibleQuestions } from './questions.js';
+import { visibleQuestions, visibleTrust, RED_FLAGS } from './questions.js';
 
 export const ID_RE = /^[A-Za-z0-9_-]{1,160}$/;
 export const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
@@ -51,7 +51,7 @@ const str = v => v === undefined || v === null || typeof v === 'string';
 export function validate(x) {
   return x?.schemaVersion === 1 && Array.isArray(x.suppliers) && x.suppliers.every(s =>
     typeof s.id === 'string' && ID_RE.test(s.id) && typeof s.name === 'string'
-    && ['booth', 'contact', 'author', 'wechat', 'priority', 'action', 'followup'].every(k => str(s[k]))
+    && ['booth', 'contact', 'author', 'wechat', 'priority', 'action', 'followup', 'sector', 'decisionNote'].every(k => str(s[k]))
     && Array.isArray(s.products) && Array.isArray(s.photos)
     && s.products.every(p => typeof p.id === 'string' && ID_RE.test(p.id) && Array.isArray(p.types) && Array.isArray(p.effects)
       && p.answers && typeof p.answers === 'object' && !Array.isArray(p.answers))
@@ -89,6 +89,26 @@ export function buildBackup(suppliers, recordMap, exportedAt = new Date().toISOS
   return { backup: { schemaVersion: 1, app: 'ggot-factory', exportedAt, suppliers: out }, missing };
 }
 
+/**
+ * 저장·가져오기 때 공통 정리. 0.2의 업체 유형 '용기 업체'는 0.3에서 업종(sector) '용기·패키지'로 옮기고
+ * 업태(kind)는 공장/무역 여부를 모르므로 '미확인'으로 둔다. 기존 제품은 '화장품' 구분으로 본다.
+ */
+export function normalizeSupplier(s, freshProduct) {
+  if (s.kind === '용기 업체') { s.sector ||= '용기·패키지'; s.kind = '미확인'; }
+  s.products = Array.isArray(s.products) && s.products.length ? s.products : [freshProduct()];
+  s.photos = Array.isArray(s.photos) ? s.photos : [];
+  for (const p of s.products) { p.types ||= []; p.effects ||= []; p.answers ||= {}; p.line ||= '화장품'; }
+  return s;
+}
+
+/** 신뢰 확인 현황: 점수가 아니라 확인/주의/미확인 개수와 위험 신호 목록 그대로. */
+export function trustStats(s) {
+  const items = visibleTrust(s), st = { 확인: 0, 주의: 0, 미확인: 0, total: items.length, flags: [] };
+  for (const [id] of items) { const v = s.trust?.[id]; st[v === '확인' || v === '주의' ? v : '미확인']++; }
+  st.flags = (Array.isArray(s.flags) ? s.flags : []).filter(f => RED_FLAGS.includes(f));
+  return st;
+}
+
 export const referencedPhotoIds = suppliers => new Set(suppliers.flatMap(s => s.photos.map(p => p.id)));
 
 export const DONE_EVIDENCE = ['자료 수령', '검토 완료'];
@@ -114,6 +134,9 @@ export function filterRows(rows, f = {}) {
   return rows.filter(({ s, p }) =>
     (!f.priority || s.priority === f.priority)
     && (!f.author || s.author === f.author)
+    && (!f.sector || (s.sector || '') === f.sector)
+    && (!f.line || (p.line || '화장품') === f.line)
+    && (!f.noFlags || trustStats(s).flags.length === 0)
     && (!f.type || p.types.includes(f.type))
     && (!f.effect || p.effects.includes(f.effect))
     && (!f.sample || p.sample === f.sample)

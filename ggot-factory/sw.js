@@ -1,7 +1,7 @@
 // 오프라인 실행용 서비스워커. HTTPS(또는 localhost)에서 첫 방문 때 앱 파일을 모두 내려받아 둔다.
 // 이후에는 서버/인터넷 연결 없이 캐시에서 앱을 연다(cache-first). 기록 데이터는 캐시가 아니라 IndexedDB에 있다.
 // 배포할 때마다 VERSION이 바뀌어야 새 버전이 설치된다(GitHub Actions 배포는 커밋 해시를 자동으로 붙인다).
-const VERSION = 'ggot-0.2.0';
+const VERSION = 'ggot-0.3.0';
 const ASSETS = [
   './', './index.html', './style.css', './manifest.webmanifest',
   './src/app.js', './src/model.js', './src/questions.js', './src/i18n.js', './src/store.js',

@@ -1,10 +1,10 @@
 // GGOT Factory Desk — UI. 데이터는 이 기기의 IndexedDB에만 저장된다(서버 전송·자동 동기화 없음).
-import { uuid, mergeSuppliers, validate, splitPhotos, buildBackup, referencedPhotoIds, compareRows, filterRows, answerStats, toCsv } from './model.js';
-import { visibleQuestions, PRODUCT_TYPES, EFFECTS, ANSWERS, EVIDENCE } from './questions.js';
+import { uuid, mergeSuppliers, validate, splitPhotos, buildBackup, referencedPhotoIds, compareRows, filterRows, answerStats, trustStats, normalizeSupplier, toCsv } from './model.js';
+import { visibleQuestions, visibleTrust, isPack, PRODUCT_TYPES, PACK_TYPES, MATERIALS, LINES, SECTORS, EFFECTS, ANSWERS, EVIDENCE, TRUST_STATES, RED_FLAGS } from './questions.js';
 import { t, getLang, setLang } from './i18n.js';
 import * as store from './store.js';
 
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,7 +14,7 @@ const pref = {
 };
 
 const WECHAT = ['추가 전', '요청 보냄', '추가 완료'];
-const KINDS = ['자체 공장', '무역회사', '용기 업체', '기타', '미확인'];
+const KINDS = ['자체 공장', '무역회사', '기타', '미확인']; // 0.2의 '용기 업체'는 업종(sector)으로 이동
 const MOQ = ['500 이하', '1,000', '3,000', '5,000 이상', '직접 입력', '미확인'];
 const SAMPLE = ['수령', '배송 예정', '미확보'];
 const PRIORITY = ['우선 후보', '비교 후보', '보류'];
@@ -26,7 +26,8 @@ let suppliers = [], current = null, product = null, view = 'list';
 let photoCategory = '제품·샘플';
 const thumbCache = new Map();
 let photoJobs = 0, photoDone = Promise.resolve();
-const cmp = { priority: '', author: '', type: '', effect: '', sample: '', evidence: false, q: '', question: '' };
+const CMP0 = { priority: '', author: '', sector: '', line: '', type: '', effect: '', sample: '', evidence: false, noFlags: false, q: '', question: '' };
+const cmp = { ...CMP0 };
 
 /* ───────── 상태 메시지 ───────── */
 let statusTimer;
@@ -75,25 +76,18 @@ addEventListener('pagehide', () => { if (dirty || timer) save().catch(() => {});
 addEventListener('ggot-db-closed', () => showSaveError(new Error(t('다른 창에서 앱이 업데이트되어 저장소가 닫혔습니다. 앱을 다시 여세요.'))));
 
 /* ───────── 데이터 생성/정리 ───────── */
-function freshProduct() { return { id: uuid(), name: '', types: ['선크림'], effects: [], answers: {}, moq: '미확인', price: '', sample: '미확보', note: '' }; }
+function freshProduct(line = '화장품') { return { id: uuid(), name: '', line, types: line === '패키지' ? [] : ['선크림'], effects: [], materials: [], answers: {}, moq: '미확인', price: '', sample: '미확보', note: '' }; }
 function nextName() {
   const n = suppliers.reduce((m, s) => Math.max(m, +(/^업체 (\d+)$/.exec(s.name)?.[1] || 0)), 0);
   return '업체 ' + String(Math.max(n, suppliers.length) + 1).padStart(3, '0');
 }
-function newSupplier() {
-  const at = new Date().toISOString();
-  const s = { id: uuid(), name: nextName(), author: author(), booth: '', wechat: '추가 전', contact: '', kind: '미확인', priority: '비교 후보', action: '견적 요청', products: [freshProduct()], photos: [], createdAt: at, updatedAt: at };
+function newSupplier(sector = '화장품 OEM·ODM') {
+  const at = new Date().toISOString(), line = sector === '용기·패키지' ? '패키지' : '화장품';
+  const s = { id: uuid(), name: nextName(), author: author(), sector, booth: '', wechat: '추가 전', contact: '', kind: '미확인', priority: '비교 후보', action: '견적 요청', trust: {}, flags: [], decisionNote: '', products: [freshProduct(line)], photos: [], createdAt: at, updatedAt: at };
   suppliers.push(s);
   return s;
 }
-function normalize(list) {
-  for (const s of list) {
-    s.products = Array.isArray(s.products) && s.products.length ? s.products : [freshProduct()];
-    s.photos = Array.isArray(s.photos) ? s.photos : [];
-    for (const p of s.products) { p.types ||= []; p.effects ||= []; p.answers ||= {}; }
-  }
-  return list;
-}
+function normalize(list) { list.forEach(s => normalizeSupplier(s, freshProduct)); return list; }
 const author = () => $('#author').value;
 const productLabel = (s, pid) => {
   if (!pid) return t('업체 공통');
@@ -125,6 +119,7 @@ function list() {
   <div class="hero">
     <button type="button" class="primary big" data-act="new">＋ ${t('새 업체 등록')}</button>
     ${fileBtn('📷 ' + t('QR·명함 사진부터 등록'), 'capture="environment" data-quick', 'big alt')}
+    <button type="button" class="wide" data-act="newPack">＋ ${t('용기·패키지 업체 등록')}</button>
   </div>
   <div id="notices"></div>
   <input id="search" type="search" placeholder="${t('업체명·담당자·부스·제품 검색')}" aria-label="${t('검색')}">
@@ -139,10 +134,10 @@ function drawList() {
     .filter(s => [s.name, s.contact, s.booth, ...s.products.map(p => p.name)].join(' ').toLowerCase().includes(q));
   $('#cards').innerHTML = items.map(s => `
     <button type="button" class="card" data-open="${esc(s.id)}">
-      <h3>${esc(s.name || t('이름 없음'))}</h3>
+      <h3>${esc(s.name || t('이름 없음'))} ${s.sector ? `<span class="tag sec">${esc(t(s.sector))}</span>` : ''}</h3>
       <p>${esc(s.booth || t('부스 미입력'))} · ${esc(s.author)} · ${t('위챗')} ${esc(t(s.wechat))}</p>
       <p>${s.products.length} ${t('제품')} · ${s.photos.length} ${t('사진')} · ${fmt(s.updatedAt || s.createdAt)}</p>
-      <p><span class="tag p-${PRIORITY.indexOf(s.priority)}">${esc(t(s.priority))}</span> ${esc(t(s.action))}${s.followup ? ' · ' + esc(s.followup) : ''}</p>
+      <p><span class="tag p-${PRIORITY.indexOf(s.priority)}">${esc(t(s.priority))}</span> ${esc(t(s.action))}${s.followup ? ' · ' + esc(s.followup) : ''}${trustLine(s)}</p>
     </button>`).join('') || `<p class="empty">${t('새 업체를 등록하세요')}</p>`;
 }
 async function drawNotices() {
@@ -162,7 +157,7 @@ async function drawNotices() {
 
 /* ───────── 업체 편집 ───────── */
 function open(id, pid) {
-  if (current?.id !== id) thumbCache.clear();
+  if (current?.id !== id) { thumbCache.clear(); trustOpen = false; }
   current = suppliers.find(s => s.id === id);
   if (!current) return list();
   product = current.products.find(p => p.id === pid) || current.products[0];
@@ -191,6 +186,7 @@ function edit() {
       ${field(bi('위챗 이름·담당자', '微信联系人'), 's.contact', s.contact)}
     </div>
     ${chips(bi('위챗 연결', '微信'), 's.wechat', WECHAT, s.wechat)}
+    ${chips(bi('업종', '业务类型'), 's.sector', SECTORS, s.sector)}
     ${chips(bi('업체 유형', '企业类型'), 's.kind', KINDS, s.kind)}
     ${s.kind === '기타' || s.kindOther ? field(t('기타 업체 유형'), 's.kindOther', s.kindOther) : ''}
   </section>
@@ -198,15 +194,22 @@ function edit() {
   <section class="card">
     <h3>2. ${t('제품별 체크')}</h3>
     <div class="chips tabs">${s.products.map((x, i) => `<button type="button" data-product="${esc(x.id)}" class="${x.id === p.id ? 'on' : ''}">${esc(x.name || t('제품') + ' ' + (i + 1))}</button>`).join('')}<button type="button" data-act="addProduct">＋ ${t('제품 추가')}</button></div>
+    ${chips(bi('제품 구분', '产品区分'), 'p.line', LINES, p.line || '화장품')}
     ${field(bi('제품·샘플명', '产品样品名'), 'p.name', p.name)}
+    ${isPack(p) ? `
+    ${chips(bi('용기·패키지 종류', '包材类型'), 'p.types', PACK_TYPES, p.types, true)}
+    ${p.types.includes('기타 패키지') || p.typeOther ? field(t('기타 제품 종류'), 'p.typeOther', p.typeOther) : ''}
+    ${chips(bi('소재', '材质'), 'p.materials', MATERIALS, p.materials || [], true)}
+    ${field(bi('용량·규격', '容量·规格'), 'p.spec', p.spec, { ph: t('예: 50ml 에어리스, 지름 38mm') })}` : `
     ${chips(bi('제품 종류', '产品类型'), 'p.types', PRODUCT_TYPES, p.types, true)}
     ${p.types.includes('기타') || p.typeOther ? field(t('기타 제품 종류'), 'p.typeOther', p.typeOther) : ''}
-    ${chips(bi('효능', '功效'), 'p.effects', EFFECTS, p.effects, true)}
+    ${chips(bi('효능', '功效'), 'p.effects', EFFECTS, p.effects, true)}`}
     <div class="qhead">
       <b>${t('질문')} ${qs.length} · <span class="muted">${t('있음')} ${st.있음} · ${t('없음')} ${st.없음} · ${t('확인 필요')} ${st['확인 필요']} · ${t('미확인')} ${st.미확인}</span></b>
       <button type="button" data-act="copyZh">📋 ${t('중국어 질문 복사')}</button>
     </div>
     <p class="hint">${t('답변과 증빙은 따로 기록합니다. 체크는 효능 입증이나 규제 승인을 뜻하지 않습니다. 같은 버튼을 다시 누르면 선택이 지워집니다.')}</p>
+    ${qs.length ? '' : `<p class="note">${t('종류를 고르면 해당 질문이 나타납니다.')}</p>`}
     ${qs.map(([id, , ko, zh]) => {
       const a = p.answers[id] || {};
       const [first, second] = getLang() === 'zh' ? [zh, ko] : [ko, zh];
@@ -240,14 +243,38 @@ function edit() {
   </section>
 
   <section class="card">
-    <h3>4. ${t('후속 조치')}</h3>
+    <details${trustOpen ? ' open' : ''} id="trustBox">
+      <summary><h3>4. ${t('신뢰 확인')} <small>${trustSummary(s)}</small></h3></summary>
+      <p class="hint">${t('점수나 순위가 아니라 확인한 사실만 기록합니다. 현장에서 못 한 항목은 미확인으로 두고, 후속 연락·샘플 단계에서 채우세요.')}</p>
+      ${visibleTrust(s).map(([id, , ko, zh]) => {
+        const v = s.trust?.[id] || '';
+        const [first, second] = getLang() === 'zh' ? [zh, ko] : [ko, zh];
+        return `<div class="question trust${v === '주의' ? ' caution' : v ? '' : ' unknown'}"><b>${esc(first)}</b><div class="sub">${esc(second)}</div>${v ? '' : `<span class="badge">${t('미확인')}</span>`}${chips('', 't.' + id, TRUST_STATES, v)}</div>`;
+      }).join('')}
+      ${chips(bi('위험 신호', '风险信号'), 's.flags', RED_FLAGS, s.flags || [], true)}
+    </details>
+  </section>
+
+  <section class="card">
+    <h3>5. ${t('판단 · 후속 조치')}</h3>
     ${chips(t('관심도'), 's.priority', PRIORITY, s.priority)}
+    ${field(t('판단 근거 (왜 우선/보류인지)'), 's.decisionNote', s.decisionNote, { area: true, ph: t('예: 소량 1,000개 가능, SPF 원본 시험서 수령. 단가 조건 미확인') })}
     ${chips(t('다음 행동'), 's.action', ACTIONS, s.action)}
     ${field(t('후속 연락일'), 's.followup', s.followup, { type: 'date' })}
   </section>
   <button type="button" class="ghost danger-text" data-act="delSupplier">${t('이 업체 기록 삭제')}</button>
   <div class="sticky"><button type="button" class="primary" data-act="next">✓ ${t('완료 · 다음 업체')}</button><button type="button" data-act="list">${t('목록으로')}</button></div>`;
   hydrateThumbs();
+}
+let trustOpen = false;
+function trustSummary(s) {
+  const st = trustStats(s);
+  return `${t('확인')} ${st.확인}/${st.total}${st.주의 ? ' · ' + t('주의') + ' ' + st.주의 : ''}${st.flags.length ? ' · ⚠ ' + t('위험 신호') + ' ' + st.flags.length : ''}`;
+}
+function trustLine(s) {
+  const st = trustStats(s);
+  if (!st.확인 && !st.주의 && !st.flags.length) return '';
+  return ` · ${t('신뢰 확인')} ${st.확인}/${st.total}${st.주의 || st.flags.length ? ` <span class="tag warnTag">⚠ ${st.주의 + st.flags.length}</span>` : ''}`;
 }
 function thumbs(photos, highlightPid) {
   if (!photos.length) return '';
@@ -414,8 +441,9 @@ viewer.addEventListener('change', e => {
 addEventListener('keydown', e => { if (e.key === 'Escape' && !viewer.hidden) closeViewer(); });
 
 /* ───────── 이동 / 등록 ───────── */
-function create() {
-  current = newSupplier(); product = current.products[0]; thumbCache.clear();
+function create(sector) {
+  trustOpen = false;
+  current = newSupplier(typeof sector === 'string' ? sector : undefined); product = current.products[0]; thumbCache.clear();
   edit(); scrollTo(0, 0);
   return save().catch(() => {});
 }
@@ -441,7 +469,7 @@ async function copyText(text) {
 }
 function zhInquiry(p) {
   const qs = visibleQuestions(p), pending = qs.filter(([id]) => !p.answers[id]?.answer), use = pending.length ? pending : qs;
-  return [`您好！关于${p.name ? `「${p.name}」` : '贵司产品'}，想确认以下问题：`, ...use.map(([, , , zh], i) => `${i + 1}. ${zh}`), '如有相关资料，麻烦发给我们，谢谢！'].join('\n');
+  return [`您好！关于${p.name ? `「${p.name}」` : isPack(p) ? '贵司包材' : '贵司产品'}，想确认以下问题：`, ...use.map(([, , , zh], i) => `${i + 1}. ${zh}`), '如有相关资料，麻烦发给我们，谢谢！'].join('\n');
 }
 function showModal(html) {
   const m = $('#modal');
@@ -450,18 +478,21 @@ function showModal(html) {
 }
 
 /* ───────── 비교표 ───────── */
-const heads = () => [t('업체'), t('부스'), t('작성자'), t('제품'), t('종류'), t('효능'), 'MOQ', t('정확한 MOQ'), t('단가 조건'), t('추가 비용'), t('납기'), t('샘플'), t('응답 현황'), t('증빙 확보'),
-  ...(cmp.question ? [t('선택 질문 답변'), t('선택 질문 증빙')] : []), t('관심도'), t('다음 행동'), t('후속 연락일'), t('위챗')];
+const heads = () => [t('업체'), t('업종'), t('부스'), t('작성자'), t('제품'), t('구분'), t('종류'), t('효능·소재'), 'MOQ', t('정확한 MOQ'), t('단가 조건'), t('추가 비용'), t('납기'), t('샘플'), t('응답 현황'), t('증빙 확보'),
+  ...(cmp.question ? [t('선택 질문 답변'), t('선택 질문 증빙')] : []), t('신뢰 확인'), t('위험 신호'), t('관심도'), t('판단 근거'), t('다음 행동'), t('후속 연락일'), t('위챗')];
 function rowValues({ s, p, index, stats: st }) {
   const tr = v => t(v);
   const a = cmp.question ? p.answers[cmp.question] : null;
   const shown = cmp.question && visibleQuestions(p).some(([id]) => id === cmp.question);
-  return [s.name, s.booth || '', s.author || '', p.name || t('제품') + ' ' + (index + 1),
-    [...p.types.map(tr), p.typeOther].filter(Boolean).join('/'), p.effects.map(tr).join('/') || t('미확인'),
+  const ts = trustStats(s);
+  return [s.name, tr(s.sector || '미확인'), s.booth || '', s.author || '', p.name || t('제품') + ' ' + (index + 1), tr(p.line || '화장품'),
+    [...p.types.map(tr), p.typeOther].filter(Boolean).join('/') + (p.spec ? ` (${p.spec})` : ''),
+    (isPack(p) ? (p.materials || []).map(tr).join('/') : p.effects.map(tr).join('/')) || t('미확인'),
     tr(p.moq || '미확인'), p.exactMoq || '', p.price || t('미확인'), p.extra || '', p.lead || '', tr(p.sample || '미확보'),
     `${t('있음')} ${st.있음} · ${t('없음')} ${st.없음} · ${t('확인 필요')} ${st['확인 필요']} · ${t('미확인')} ${st.미확인}`, `${st.증빙}/${st.total}`,
     ...(cmp.question ? [a?.answer ? tr(a.answer) : (shown ? t('미확인') : t('해당 질문 아님')), a?.evidence ? tr(a.evidence) : ''] : []),
-    tr(s.priority || ''), tr(s.action || ''), s.followup || '', tr(s.wechat || '')];
+    `${t('확인')} ${ts.확인}/${ts.total}${ts.주의 ? ` · ${t('주의')} ${ts.주의}` : ''}`, ts.flags.map(tr).join(', '),
+    tr(s.priority || ''), s.decisionNote || '', tr(s.action || ''), s.followup || '', tr(s.wechat || '')];
 }
 const sel = (key, label, values) => `<label class="fld"><span>${label}</span><select data-cmp="${key}"><option value="">${t('전체')}</option>${values.map(v => `<option value="${esc(v)}"${cmp[key] === v ? ' selected' : ''}>${esc(t(v))}</option>`).join('')}</select></label>`;
 function compare() {
@@ -471,10 +502,11 @@ function compare() {
   <h2>${t('공장·제품 비교')}</h2>
   <p class="hint">${t('제품 단위 비교입니다. 점수·순위는 매기지 않습니다. 단가는 통화·수량·부대비용이 확인될 때만 비교하세요. 미확인은 불가가 아니며, 자료 확보는 효능 검증과 다릅니다.')}</p>
   <div class="filters">
-    ${sel('priority', t('관심도'), PRIORITY)}${sel('author', t('작성자'), AUTHORS)}${sel('type', t('제품 종류'), PRODUCT_TYPES)}${sel('effect', t('효능'), EFFECTS)}${sel('sample', t('샘플'), SAMPLE)}
+    ${sel('priority', t('관심도'), PRIORITY)}${sel('author', t('작성자'), AUTHORS)}${sel('sector', t('업종'), SECTORS)}${sel('line', t('제품 구분'), LINES)}${sel('type', t('제품 종류'), [...PRODUCT_TYPES, ...PACK_TYPES])}${sel('effect', t('효능'), EFFECTS)}${sel('sample', t('샘플'), SAMPLE)}
     <label class="fld"><span>${t('질문 열 추가')}</span><select data-cmp="question"><option value="">${t('없음')}</option>${qopts.map(([id, , ko, zh]) => `<option value="${esc(id)}"${cmp.question === id ? ' selected' : ''}>${esc(getLang() === 'zh' ? zh : ko)}</option>`).join('')}</select></label>
     <label class="fld"><span>${t('검색')}</span><input type="search" data-cmp="q" value="${esc(cmp.q)}"></label>
     <label class="check"><input type="checkbox" data-cmp="evidence"${cmp.evidence ? ' checked' : ''}> ${t('증빙 확보된 제품만')}</label>
+    <label class="check"><input type="checkbox" data-cmp="noFlags"${cmp.noFlags ? ' checked' : ''}> ${t('위험 신호 없는 업체만')}</label>
   </div>
   <div class="row2"><button type="button" data-act="csv">⬇ CSV ${t('내보내기')}</button><button type="button" class="ghost" data-act="resetCmp">${t('필터 초기화')}</button></div>
   <p class="meta" id="cmpCount"></p>
@@ -482,11 +514,12 @@ function compare() {
   drawCompare();
 }
 function currentRows() { return filterRows(compareRows(suppliers), cmp); }
+const WIDE = { has: h => [t('응답 현황'), t('위험 신호'), t('판단 근거'), t('신뢰 확인')].includes(h) };
 function drawCompare() {
   const rows = currentRows(), h = heads();
   $('#cmpCount').textContent = `${rows.length} / ${compareRows(suppliers).length} ${t('제품')}`;
   $('#table').innerHTML = rows.length ? `<table class="cmp"><thead><tr>${h.map(x => `<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.map(r =>
-    `<tr data-open="${esc(r.s.id)}" data-pid="${esc(r.p.id)}" tabindex="0">${rowValues(r).map((v, i) => `<td data-label="${esc(h[i])}">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`
+    `<tr data-open="${esc(r.s.id)}" data-pid="${esc(r.p.id)}" tabindex="0">${rowValues(r).map((v, i) => `<td data-label="${esc(h[i])}"${WIDE.has(h[i]) ? ' class="wide"' : ''}>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     : `<p class="empty">${t('조건에 맞는 제품이 없습니다')}</p>`;
 }
 function downloadBlob(blob, name) {
@@ -678,6 +711,23 @@ app.addEventListener('click', async e => {
   const d = b.dataset;
   if (d.key) {
     const [a, k] = d.key.split('.'), v = d.value;
+    if (a === 't') {
+      current.trust ??= {};
+      if (current.trust[k] === v) delete current.trust[k]; else current.trust[k] = v;
+      trustOpen = true; saveNow(); rerender(); return;
+    }
+    if (a === 's' && k === 'flags') trustOpen = true;
+    if (a === 'p' && k === 'line' && (product.line || '화장품') !== v) {
+      product.line = v; product.types = v === '패키지' ? [] : ['선크림']; // 답변은 id별로 보존
+      saveNow(); rerender(); return;
+    }
+    if (a === 's' && k === 'sector' && current.sector !== v) {
+      current.sector = v;
+      const line = v === '용기·패키지' ? '패키지' : '화장품';
+      // 아직 손대지 않은 제품만 구분을 따라 바꾼다
+      current.products.forEach(x => { if (!x.name && !Object.keys(x.answers).length && (x.line || '화장품') !== line) { x.line = line; x.types = line === '패키지' ? [] : ['선크림']; } });
+      saveNow(); rerender(); return;
+    }
     if (a === 'a' || a === 'e') {
       const slot = a === 'a' ? 'answer' : 'evidence', ans = (product.answers[k] ??= {});
       if (ans[slot] === v) delete ans[slot]; else ans[slot] = v;
@@ -711,7 +761,8 @@ app.addEventListener('click', async e => {
     case 'next': return goNext(b);
     case 'backup': return backupView();
     case 'orphans': return orphansView();
-    case 'addProduct': product = freshProduct(); current.products.push(product); saveNow(); return rerender();
+    case 'addProduct': product = freshProduct(product?.line || (current.sector === '용기·패키지' ? '패키지' : '화장품')); current.products.push(product); saveNow(); return rerender();
+    case 'newPack': return create('용기·패키지');
     case 'delProduct': {
       if (!confirm(t('이 제품의 답변·가격 기록을 삭제할까요? 사진은 업체 공통으로 남습니다.'))) return;
       const gone = product;
@@ -729,7 +780,7 @@ app.addEventListener('click', async e => {
     }
     case 'copyZh': { const ok = await copyText(zhInquiry(product)); if (ok) setStatus(t('중국어 질문을 복사했습니다. 위챗에 붙여넣으세요.')); return; }
     case 'csv': return exportCsv();
-    case 'resetCmp': Object.assign(cmp, { priority: '', author: '', type: '', effect: '', sample: '', evidence: false, q: '', question: '' }); return compare();
+    case 'resetCmp': Object.assign(cmp, CMP0); return compare();
     case 'makeBackup': return makeBackup(b);
     case 'shareBackup': return shareBackup();
     case 'downloadBackup': return downloadBackup();
@@ -737,6 +788,7 @@ app.addEventListener('click', async e => {
     case 'delOld': if (confirm(t('0.1 형식 원본 보관본을 삭제할까요? 먼저 내려받기를 권장합니다.'))) { await store.deleteState('backup-before-v2'); statusView(); } return;
   }
 });
+app.addEventListener('toggle', e => { if (e.target.id === 'trustBox') trustOpen = e.target.open; }, true);
 app.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('tr[data-open]')) open(e.target.dataset.open, e.target.dataset.pid); });
 $('#modal').addEventListener('click', e => { if (e.target.closest('[data-act=closeModal]') || e.target.id === 'modal') $('#modal').hidden = true; });
 $('#savebar').addEventListener('click', e => {
@@ -760,7 +812,7 @@ $('#author').value = AUTHORS.includes(pref.get('author', 'Tony')) ? pref.get('au
 $('#author').onchange = () => pref.set('author', author());
 document.querySelector('nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-nav]'); if (!b) return;
-  ({ new: create, list, compare, backup: backupView, status: statusView })[b.dataset.nav]();
+  ({ new: () => create(), list, compare, backup: backupView, status: statusView })[b.dataset.nav]();
   if (b.dataset.nav !== 'new') scrollTo(0, 0);
 });
 
