@@ -1,10 +1,10 @@
 // GGOT Factory Desk — UI. 데이터는 이 기기의 IndexedDB에만 저장된다(서버 전송·자동 동기화 없음).
-import { uuid, mergeSuppliers, validate, splitPhotos, buildBackup, referencedPhotoIds, compareRows, filterRows, answerStats, trustStats, normalizeSupplier, toCsv } from './model.js';
+import { uuid, mergeSuppliers, validate, splitPhotos, buildBackup, referencedPhotoIds, compareRows, filterRows, answerStats, trustStats, normalizeSupplier, toCsv, isGone, bumpRev, purgeStub } from './model.js';
 import { visibleQuestions, visibleTrust, isPack, PRODUCT_TYPES, PACK_TYPES, MATERIALS, LINES, SECTORS, EFFECTS, ANSWERS, EVIDENCE, TRUST_STATES, RED_FLAGS } from './questions.js';
 import { t, getLang, setLang } from './i18n.js';
 import * as store from './store.js';
 
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -23,6 +23,9 @@ const CATEGORIES = ['제품·샘플', '용기·패키지', '성분·자료', '�
 const AUTHORS = ['Tony', '金彤'];
 
 let suppliers = [], current = null, product = null, view = 'list';
+let deviceId = 'unknown'; // 이 기기의 동기화 ID (IndexedDB state['device'])
+let selecting = false; const selected = new Set(); // 목록 선택 삭제
+const live = () => suppliers.filter(s => !isGone(s));
 let photoCategory = '제품·샘플';
 const thumbCache = new Map();
 let photoJobs = 0, photoDone = Promise.resolve();
@@ -41,7 +44,8 @@ function setStatus(text, sticky = false) {
 /* ───────── 저장 큐: 모든 기록은 순서대로, 실패는 호출자에게 전파 ───────── */
 let saveChain = Promise.resolve(), dirty = false, failed = false, timer = null;
 function enqueue(fn) { const p = saveChain.catch(() => {}).then(fn); saveChain = p; return p; }
-function touch(owner = current) { if (owner) owner.updatedAt = new Date().toISOString(); }
+/** 기록 수정 표시: 수정 시각 + 이 기기의 버전 카운터 +1 (두 기기 동기화 판단용) */
+function touch(owner = current) { if (!owner) return; owner.updatedAt = new Date().toISOString(); owner.rev = bumpRev(owner.rev, deviceId); }
 function save() {
   clearTimeout(timer); timer = null; dirty = false;
   const snapshot = structuredClone(suppliers);
@@ -83,7 +87,7 @@ function nextName() {
 }
 function newSupplier(sector = '화장품 OEM·ODM') {
   const at = new Date().toISOString(), line = sector === '용기·패키지' ? '패키지' : '화장품';
-  const s = { id: uuid(), name: nextName(), author: author(), sector, booth: '', wechat: '추가 전', contact: '', kind: '미확인', priority: '비교 후보', action: '견적 요청', trust: {}, flags: [], decisionNote: '', products: [freshProduct(line)], photos: [], createdAt: at, updatedAt: at };
+  const s = { id: uuid(), rev: { [deviceId]: 1 }, name: nextName(), author: author(), sector, booth: '', wechat: '추가 전', contact: '', kind: '미확인', priority: '비교 후보', action: '견적 요청', trust: {}, flags: [], decisionNote: '', products: [freshProduct(line)], photos: [], createdAt: at, updatedAt: at };
   suppliers.push(s);
   return s;
 }
@@ -112,9 +116,29 @@ function chips(label, key, values, value, multi = false) {
 const bi = (ko, zhText) => (getLang() === 'zh' ? t(ko) : `${ko} / ${zhText}`);
 const fileBtn = (text, attrs, cls = '') => `<label class="btn ${cls}">${text}<input class="vh" type="file" accept="image/*" ${attrs}></label>`;
 
+/* ───────── 휴지통 ───────── */
+/** 휴지통으로 이동(사진·답변 유지). 저장 실패면 되돌리고 false. */
+async function trashSuppliers(items) {
+  const at = new Date().toISOString();
+  items.forEach(s => { s.deletedAt = at; touch(s); });
+  try { await save(); setStatus(`${items.length}${t('개 업체를 휴지통으로 옮겼습니다')}`); return true; }
+  catch { items.forEach(s => { delete s.deletedAt; }); alert(t('저장 실패로 삭제하지 않았습니다.')); return false; }
+}
+function trashView() {
+  view = 'trash'; current = null; product = null;
+  const items = suppliers.filter(s => s.deletedAt && !s.purged).sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  app.innerHTML = `<div class="crumb"><button type="button" class="ghost" data-act="list">← ${t('목록')}</button></div>
+  <h2>🗑 ${t('휴지통')} <small>${items.length}</small></h2>
+  <p class="hint">${t('휴지통의 업체는 목록·비교표에서 빠지지만 사진과 답변은 남아 있습니다. 동기화 파일을 주고받으면 상대 기기에서도 똑같이 휴지통으로 옮겨집니다.')}</p>
+  <div class="cards">${items.map(s => `<div class="card"><h3>${esc(s.name || t('이름 없음'))}</h3><p>${s.products.length} ${t('제품')} · ${s.photos.length} ${t('사진')} · ${t('삭제')} ${fmt(s.deletedAt)}</p>
+    <div class="row2"><button type="button" data-act="restore" data-id="${esc(s.id)}">↩ ${t('복원')}</button><button type="button" class="danger" data-act="purge" data-id="${esc(s.id)}">${t('영구 삭제')}</button></div></div>`).join('') || `<p class="empty">${t('휴지통이 비어 있습니다')}</p>`}</div>
+  ${items.length ? `<button type="button" class="danger" data-act="emptyTrash">${t('휴지통 비우기')}</button>` : ''}`;
+}
+
 /* ───────── 목록 ───────── */
 function list() {
   view = 'list'; current = null; product = null; thumbCache.clear();
+  const trashN = suppliers.filter(s => s.deletedAt && !s.purged).length;
   app.innerHTML = `
   <div class="hero">
     <button type="button" class="primary big" data-act="new">＋ ${t('새 업체 등록')}</button>
@@ -123,17 +147,21 @@ function list() {
   </div>
   <div id="notices"></div>
   <input id="search" type="search" placeholder="${t('업체명·담당자·부스·제품 검색')}" aria-label="${t('검색')}">
-  <h2>${t('업체 기록')} <small>${suppliers.length}</small></h2>
-  <div id="cards" class="cards"></div>`;
+  <div class="listhead"><h2>${t('업체 기록')} <small>${live().length}</small></h2>
+    <button type="button" class="${selecting ? 'primary' : ''}" data-act="selectMode">${selecting ? t('선택 끝내기') : '☑ ' + t('선택 삭제')}</button></div>
+  ${selecting ? `<p class="hint">${t('지울 업체를 눌러 선택하세요. 지운 업체는 휴지통에서 복원할 수 있습니다.')}</p>` : ''}
+  <div id="cards" class="cards${selecting ? ' selecting' : ''}"></div>
+  <p class="trashlink"><button type="button" class="link" data-act="trash">🗑 ${t('휴지통')} (${trashN})</button></p>
+  ${selecting ? `<div class="sticky"><button type="button" class="primary danger-bg" data-act="deleteSelected" id="delSel">🗑 ${t('선택한 업체 삭제')} (${selected.size})</button><button type="button" data-act="selectMode">${t('취소')}</button></div>` : ''}`;
   drawList();
   drawNotices();
 }
 function drawList() {
   const q = ($('#search')?.value || '').toLowerCase();
-  const items = [...suppliers].sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+  const items = live().sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
     .filter(s => [s.name, s.contact, s.booth, ...s.products.map(p => p.name)].join(' ').toLowerCase().includes(q));
   $('#cards').innerHTML = items.map(s => `
-    <button type="button" class="card" data-open="${esc(s.id)}">
+    <button type="button" class="card${selected.has(s.id) ? ' sel' : ''}" ${selecting ? `data-pick="${esc(s.id)}" aria-pressed="${selected.has(s.id)}"` : `data-open="${esc(s.id)}"`}>
       <h3>${esc(s.name || t('이름 없음'))} ${s.sector ? `<span class="tag sec">${esc(t(s.sector))}</span>` : ''}</h3>
       <p>${esc(s.booth || t('부스 미입력'))} · ${esc(s.author)} · ${t('위챗')} ${esc(t(s.wechat))}</p>
       <p>${s.products.length} ${t('제품')} · ${s.photos.length} ${t('사진')} · ${fmt(s.updatedAt || s.createdAt)}</p>
@@ -147,7 +175,7 @@ async function drawNotices() {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   if (ios && !standalone) out.push(`<p class="warn">${t('지금은 Safari 탭입니다. 홈 화면에 추가한 앱과 Safari 탭은 저장소가 따로입니다. 현장 입력은 홈 화면 앱 한 곳에서만 하세요.')}</p>`);
   const lastB = +pref.get('lastBackupAt', 0), lastC = +pref.get('lastChangeAt', 0);
-  if (suppliers.length && lastC > lastB) out.push(`<p class="note">${lastB ? t('마지막 백업') + ': ' + ago(lastB) + '. ' : t('아직 백업이 없습니다. ')}${t('백업 이후 변경이 있습니다.')} <button type="button" class="link" data-act="backup">${t('백업 만들기')}</button></p>`);
+  if (live().length && lastC > lastB) out.push(`<p class="note">${lastB ? t('마지막 백업') + ': ' + ago(lastB) + '. ' : t('아직 백업이 없습니다. ')}${t('백업 이후 변경이 있습니다.')} <button type="button" class="link" data-act="backup">${t('백업 만들기')}</button></p>`);
   box.innerHTML = out.join('');
   try {
     const orphans = await findOrphans();
@@ -168,7 +196,7 @@ function edit() {
   const s = current, p = product, qs = visibleQuestions(p), st = answerStats(p);
   const supPhotos = s.photos.filter(x => !x.productId), prodPhotos = s.photos.filter(x => x.productId);
   app.innerHTML = `
-  <div class="crumb"><button type="button" class="ghost" data-act="list">← ${t('목록')}</button><span class="meta">${esc(s.author)} · ${fmt(s.createdAt)}</span></div>
+  <div class="crumb"><button type="button" class="ghost" data-act="list">← ${t('목록')}</button><span class="meta">${esc(s.author)} · ${fmt(s.createdAt)}</span><button type="button" class="ghost danger-text" data-act="delSupplier">🗑 ${t('삭제')}</button></div>
   <h2 id="supName">${esc(s.name || t('이름 없음'))}</h2>
   ${s.copyOf ? `<p class="warn">${t('가져오기 중 같은 기록의 다른 내용이 있어 사본으로 보존된 업체입니다. 원본과 비교 후 정리하세요.')}</p>` : ''}
 
@@ -262,7 +290,7 @@ function edit() {
     ${chips(t('다음 행동'), 's.action', ACTIONS, s.action)}
     ${field(t('후속 연락일'), 's.followup', s.followup, { type: 'date' })}
   </section>
-  <button type="button" class="ghost danger-text" data-act="delSupplier">${t('이 업체 기록 삭제')}</button>
+  <button type="button" class="ghost danger-text" data-act="delSupplier">🗑 ${t('이 업체 기록 삭제')}</button>
   <div class="sticky"><button type="button" class="primary" data-act="next">✓ ${t('완료 · 다음 업체')}</button><button type="button" data-act="list">${t('목록으로')}</button></div>`;
   hydrateThumbs();
 }
@@ -539,18 +567,27 @@ function backupView() {
   view = 'backup'; current = null; product = null;
   const lastB = +pref.get('lastBackupAt', 0);
   app.innerHTML = `
-  <h2>${t('백업 · 합치기')}</h2>
+  <h2>${t('백업 · 동기화')}</h2>
   <section class="card">
-    <h3>${t('사진 포함 백업 만들기')}</h3>
-    <p class="hint">${t('기록은 이 기기에만 있습니다. 자동 동기화가 없으므로 전시 중 여러 번 백업하세요. 백업 파일에는 위챗 QR·연락처·견적이 들어 있으니 공개된 곳에 올리지 마세요.')}</p>
-    <button type="button" class="primary" data-act="makeBackup">${t('백업 파일 만들기')}</button>
+    <h3>${t('Tony ↔ 金彤 동기화 (인터넷 불필요)')}</h3>
+    <ol class="steps">
+      <li>${t('Tony: [동기화 파일 만들기] → [공유] → AirDrop으로 金彤에게 보내기')}</li>
+      <li>${t('金彤: 받은 파일을 [동기화 파일 받기]로 선택 → 자동 합치기')}</li>
+      <li>${t('金彤도 똑같이 파일을 만들어 Tony에게 보내고, Tony가 받기 → 두 기기가 같아집니다')}</li>
+    </ol>
+    <p class="hint">${t('누가 무엇을 고쳤는지 기기별로 추적해서 더 최신인 기록으로 갱신하고, 삭제(휴지통)도 상대에게 전달합니다. 두 사람이 같은 업체를 동시에 고친 경우에만 덮어쓰지 않고 "(가져온 사본)"으로 남깁니다. 파일은 서버를 거치지 않습니다(위챗으로 보내면 텐센트 서버를 거침).')}</p>
+  </section>
+  <section class="card">
+    <h3>1. ${t('동기화·백업 파일 만들기 (사진 포함)')}</h3>
+    <p class="hint">${t('이 파일이 곧 백업입니다. 전시 중 여러 번 만들어 "파일에 저장"도 해두세요. 위챗 QR·연락처·견적이 들어 있으니 공개된 곳에 올리지 마세요.')}</p>
+    <button type="button" class="primary" data-act="makeBackup">${t('동기화 파일 만들기')}</button>
     <div id="backupOut"></div>
     <p class="meta">${t('마지막 백업')}: ${lastB ? new Date(lastB).toLocaleString() : t('없음')}</p>
   </section>
   <section class="card">
-    <h3>${t('백업 합치기 (가져오기)')}</h3>
-    <p class="hint">${t('다른 기기(Tony/金彤)의 백업 파일을 이 기기 기록에 합칩니다. 기존 기록은 덮어쓰지 않습니다. 같은 기록인데 내용이 다르면 "(가져온 사본)"으로 따로 보존합니다. 회사명이 같아도 다른 기록은 자동으로 합치지 않습니다.')}</p>
-    <label class="btn">📂 ${t('백업 파일 선택')}<input class="vh" type="file" accept="application/json,.json" data-import></label>
+    <h3>2. ${t('동기화 파일 받기 (합치기)')}</h3>
+    <label class="btn primary">📂 ${t('받은 파일 선택')}<input class="vh" type="file" accept="application/json,.json" data-import></label>
+    <p class="hint">${t('회사명이 같아도 서로 따로 등록한 업체는 자동으로 합치지 않습니다. 중복이면 하나를 휴지통으로 옮기세요.')}</p>
   </section>`;
 }
 let preparedBackup = null;
@@ -603,10 +640,12 @@ async function importFile(file) {
     const r = mergeSuppliers(suppliers, incoming);
     await enqueue(() => store.importAtomic(structuredClone(r.suppliers), records));
     suppliers = r.suppliers;
+    // 상대 기기에서 지운 사진: 이제 어디에도 연결되지 않으면 정리
+    deletePhotoData(r.replaced.flatMap(x => x.photos.map(p => p.id))).catch(() => {});
     if (!dirty && !timer) { failed = false; hideSaveError(); }
     pref.set('lastChangeAt', Date.now());
     list();
-    const msg = `${t('합치기 완료')}: ${t('추가')} ${r.added}, ${t('사본 보존')} ${r.copies}, ${t('동일하여 건너뜀')} ${r.same}`;
+    const msg = `${t('동기화 완료')}: ${t('추가')} ${r.added}, ${t('갱신')} ${r.updated}, ${t('삭제 반영')} ${r.removed}, ${t('내 쪽이 최신이라 유지')} ${r.kept}, ${t('동시 수정 사본')} ${r.copies}, ${t('동일')} ${r.same}`;
     setStatus(msg); alert(msg);
   } catch (e) {
     alert(t('가져오기 실패 — 이 기기의 기록은 바뀌지 않았습니다.') + '\n' + errorText(e));
@@ -618,7 +657,7 @@ let swInfo = t('확인 중');
 async function statusView() {
   view = 'status'; current = null; product = null;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const photos = suppliers.reduce((n, s) => n + s.photos.length, 0), prods = suppliers.reduce((n, s) => n + s.products.length, 0);
+  const photos = live().reduce((n, s) => n + s.photos.length, 0), prods = live().reduce((n, s) => n + s.products.length, 0);
   app.innerHTML = `
   <h2>${t('저장 · 오프라인 상태')}</h2>
   <section class="card"><dl class="info">
@@ -627,9 +666,10 @@ async function statusView() {
     <dt>${t('오프라인 실행')}</dt><dd id="offline">${esc(swInfo)}</dd>
     <dt>${t('영구 저장')}</dt><dd id="persist">…</dd>
     <dt>${t('사용량')}</dt><dd id="usage">…</dd>
-    <dt>${t('기록')}</dt><dd>${suppliers.length} ${t('업체')} · ${prods} ${t('제품')} · ${photos} ${t('사진')}</dd>
+    <dt>${t('기록')}</dt><dd>${live().length} ${t('업체')} · ${prods} ${t('제품')} · ${photos} ${t('사진')}</dd>
     <dt>${t('마지막 백업')}</dt><dd>${+pref.get('lastBackupAt', 0) ? new Date(+pref.get('lastBackupAt', 0)).toLocaleString() : t('없음')}</dd>
     <dt>${t('앱 버전')}</dt><dd>${APP_VERSION}</dd>
+    <dt>${t('기기 ID (동기화용)')}</dt><dd>${esc(deviceId.slice(0, 8))}</dd>
   </dl></section>
   <section class="card">
     <h3>${t('사진 설정')}</h3>
@@ -667,7 +707,7 @@ async function orphansView() {
   view = 'orphans'; current = null; product = null;
   app.innerHTML = `<h2>${t('미연결 사진함')}</h2><p class="hint">${t('저장 중 문제가 생기거나 업체가 지워져 어느 업체에도 연결되지 않은 사진입니다. 업체에 연결하거나 삭제하세요.')}</p><div id="orph" class="photos"></div>`;
   const ids = await findOrphans();
-  const opts = [...suppliers].reverse().map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+  const opts = live().reverse().map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
   $('#orph').innerHTML = ids.map(id => `<div class="ph"><img data-thumb="${esc(id)}" alt=""><select data-orph-target="${esc(id)}"><option value="">${t('업체 선택')}</option>${opts}</select><button type="button" data-orph-link="${esc(id)}">${t('연결')}</button><button type="button" class="danger-text" data-orph-del="${esc(id)}">${t('삭제')}</button></div>`).join('') || `<p class="empty">${t('미연결 사진이 없습니다')}</p>`;
   hydrateThumbs();
 }
@@ -706,9 +746,15 @@ app.addEventListener('change', e => {
   }
 });
 app.addEventListener('click', async e => {
-  const b = e.target.closest('[data-act],[data-key],[data-product],[data-open],[data-photo-open],[data-cat-pick],[data-orph-link],[data-orph-del]');
+  const b = e.target.closest('[data-act],[data-key],[data-product],[data-open],[data-pick],[data-photo-open],[data-cat-pick],[data-orph-link],[data-orph-del]');
   if (!b) return;
   const d = b.dataset;
+  if (d.pick) {
+    if (selected.has(d.pick)) selected.delete(d.pick); else selected.add(d.pick);
+    b.classList.toggle('sel', selected.has(d.pick)); b.setAttribute('aria-pressed', selected.has(d.pick));
+    const del = $('#delSel'); if (del) del.textContent = `🗑 ${t('선택한 업체 삭제')} (${selected.size})`;
+    return;
+  }
   if (d.key) {
     const [a, k] = d.key.split('.'), v = d.value;
     if (a === 't') {
@@ -771,11 +817,33 @@ app.addEventListener('click', async e => {
       product = current.products[0]; saveNow(); return rerender();
     }
     case 'delSupplier': {
-      if (!confirm(t('이 업체와 제품·사진 기록을 모두 삭제할까요? 되돌릴 수 없습니다. 먼저 백업을 권장합니다.'))) return;
-      const gone = current, idx = suppliers.indexOf(gone);
-      suppliers.splice(idx, 1);
-      try { await save(); await deletePhotoData(gone.photos.map(x => x.id)); list(); setStatus(t('삭제됨')); }
-      catch { suppliers.splice(idx, 0, gone); alert(t('저장 실패로 삭제하지 않았습니다.')); }
+      if (!confirm(`「${current.name}」 ${t('업체를 휴지통으로 옮길까요? 휴지통에서 복원할 수 있습니다.')}`)) return;
+      if (await trashSuppliers([current])) list();
+      return;
+    }
+    case 'selectMode': selecting = !selecting; selected.clear(); return list();
+    case 'deleteSelected': {
+      const items = live().filter(s => selected.has(s.id));
+      if (!items.length) return alert(t('지울 업체를 먼저 선택하세요'));
+      if (!confirm(`${items.length}${t('개 업체를 휴지통으로 옮길까요?')}\n${items.map(s => '· ' + s.name).join('\n')}`)) return;
+      if (await trashSuppliers(items)) { selecting = false; selected.clear(); list(); }
+      return;
+    }
+    case 'trash': return trashView();
+    case 'restore': {
+      const s = suppliers.find(x => x.id === d.id); if (!s) return;
+      const prev = s.deletedAt; delete s.deletedAt; touch(s);
+      try { await save(); setStatus(t('복원했습니다')); trashView(); } catch { s.deletedAt = prev; }
+      return;
+    }
+    case 'purge': case 'emptyTrash': {
+      const items = d.act === 'purge' ? suppliers.filter(x => x.id === d.id) : suppliers.filter(x => x.deletedAt && !x.purged);
+      if (!items.length) return;
+      if (!confirm(`${items.length}${t('개 업체를 영구 삭제할까요? 사진까지 지워지며 되돌릴 수 없습니다.')}`)) return;
+      const before = suppliers;
+      suppliers = suppliers.map(x => items.includes(x) ? purgeStub(x, deviceId) : x);
+      try { await save(); await deletePhotoData(items.flatMap(x => x.photos.map(p => p.id))); setStatus(t('영구 삭제했습니다')); trashView(); }
+      catch { suppliers = before; alert(t('저장 실패로 삭제하지 않았습니다.')); }
       return;
     }
     case 'copyZh': { const ok = await copyText(zhInquiry(product)); if (ok) setStatus(t('중국어 질문을 복사했습니다. 위챗에 붙여넣으세요.')); return; }
@@ -805,13 +873,14 @@ function applyStatic() {
 }
 function rerenderView() {
   applyStatic();
-  ({ list, edit: rerender, compare, backup: backupView, status: statusView, orphans: orphansView })[view]?.();
+  ({ list, edit: rerender, compare, backup: backupView, status: statusView, orphans: orphansView, trash: trashView })[view]?.();
 }
 $('#lang').onclick = () => { setLang(getLang() === 'zh' ? 'ko' : 'zh'); rerenderView(); };
 $('#author').value = AUTHORS.includes(pref.get('author', 'Tony')) ? pref.get('author', 'Tony') : 'Tony';
 $('#author').onchange = () => pref.set('author', author());
 document.querySelector('nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-nav]'); if (!b) return;
+  selecting = false; selected.clear();
   ({ new: () => create(), list, compare, backup: backupView, status: statusView })[b.dataset.nav]();
   if (b.dataset.nav !== 'new') scrollTo(0, 0);
 });
@@ -846,6 +915,8 @@ function showUpdate(reg) {
 applyStatic();
 try {
   await store.open();
+  deviceId = await store.getState('device');
+  if (!deviceId) { deviceId = uuid(); await store.putState('device', deviceId); }
   suppliers = normalize((await store.getState('suppliers')) || []);
   list();
   navigator.storage?.persist?.().catch(() => {});

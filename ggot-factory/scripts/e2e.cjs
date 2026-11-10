@@ -207,16 +207,33 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await B.setInputFiles('input[data-import]', backupPath);
   await B.waitForTimeout(500);
   check('같은 백업 재가져오기 → 중복 없음', (await B.evaluate(() => window.__ggot.suppliers.length)) === 4);
-  // 충돌: B에서 A 기록 수정 후 A 원본 다시 가져오기 → 사본 보존
+  // 동기화 ①: B가 A 기록을 고친 뒤 A의 예전 파일을 다시 받아도 B 수정본 유지(사본 없음)
+  console.log('3b. 두 기기 동기화');
   await B.click('nav [data-nav=list]');
   await B.click(`[data-open="${bS.id}"]`);
   await B.fill('[data-field="s.booth"]', 'B에서 수정');
   await B.evaluate(() => window.__ggot.flush());
   await B.click('nav [data-nav=backup]');
+  dialogs.length = 0;
   await B.setInputFiles('input[data-import]', backupPath);
+  await B.waitForFunction(() => document.querySelector('#status').textContent.includes('동기화 완료'));
+  check('예전 파일 재수신 → 내 최신 수정 유지, 사본 없음', (await B.evaluate(() => window.__ggot.suppliers.length)) === 4 && (await B.evaluate(id => window.__ggot.suppliers.find(s => s.id === id).booth, bS.id)) === 'B에서 수정');
+  // 동기화 ②: A도 같은 업체를 고침(동시 수정) → B가 A의 새 파일을 받으면 사본으로 보존
+  const makeBackupFile = async (P, name) => {
+    await P.click('nav [data-nav=backup]'); await P.click('[data-act=makeBackup]'); await P.waitForSelector('[data-act=downloadBackup]');
+    const [d] = await Promise.all([P.waitForEvent('download'), P.click('[data-act=downloadBackup]')]);
+    const f = path.join(tmp, name); await d.saveAs(f); return f;
+  };
+  await A.click('nav [data-nav=list]');
+  await A.click(`[data-open="${after[1].id}"]`);
+  await A.fill('[data-field="s.booth"]', 'A에서 수정');
+  await A.evaluate(() => window.__ggot.flush());
+  const backupA2 = await makeBackupFile(A, 'a2.json');
+  await B.click('nav [data-nav=backup]');
+  await B.setInputFiles('input[data-import]', backupA2);
   await B.waitForFunction(() => window.__ggot.suppliers.length === 5);
   const names = await B.evaluate(() => window.__ggot.suppliers.map(s => s.name + '|' + s.booth));
-  check('충돌 시 기존(B 수정본) 유지 + 가져온 사본 보존', names.some(n => n.endsWith('|B에서 수정')) && names.some(n => n.includes('(가져온 사본)|9.2 B15')));
+  check('동시 수정 → 내 기록 유지 + 상대 버전은 사본', names.some(n => n.endsWith('|B에서 수정')) && names.some(n => n.includes('(가져온 사본)|A에서 수정')));
 
   // 비교표 + CSV
   console.log('4. 비교표·CSV');
@@ -271,6 +288,46 @@ const check = (name, cond, extra = '') => { if (cond) { pass++; console.log('  �
   await A.click('[data-orph-link="orphan-test"]');
   await A.waitForFunction(() => window.__ggot.suppliers[0].photos.some(p => p.id === 'orphan-test'));
   check('미연결 사진을 업체에 연결', true);
+
+  // ── 5b. 업체 삭제(휴지통) + 삭제 동기화
+  console.log('5b. 업체 삭제·휴지통·삭제 동기화');
+  await B.click('nav [data-nav=list]');
+  const packId = await B.evaluate(() => window.__ggot.suppliers.find(s => s.name === '합성 용기 공장').id);
+  dialogs.length = 0;
+  await B.click('[data-act=selectMode]');
+  await B.click(`[data-pick="${packId}"]`);
+  check('선택 삭제: 선택 수 표시', (await B.textContent('#delSel')).includes('(1)'));
+  await B.screenshot({ path: path.join(OUT, 'd1440-select-delete.png') });
+  await B.click('[data-act=deleteSelected]');
+  await B.waitForFunction(id => !!window.__ggot.suppliers.find(s => s.id === id).deletedAt, packId);
+  check('선택 삭제 확인창 + 목록에서 빠짐', dialogs.some(m => m.includes('휴지통')) && !(await B.$(`[data-open="${packId}"]`)));
+  await B.click('[data-act=trash]');
+  await B.click(`[data-act=restore][data-id="${packId}"]`);
+  await B.waitForFunction(id => !window.__ggot.suppliers.find(s => s.id === id).deletedAt, packId);
+  check('휴지통에서 복원', true);
+  await B.click('nav [data-nav=list]');
+  await B.click(`[data-open="${packId}"]`);
+  await B.click('.crumb [data-act=delSupplier]');
+  await B.waitForSelector('[data-act=new]');
+  check('편집 화면 상단 [삭제] → 휴지통', (await B.evaluate(id => !!window.__ggot.suppliers.find(s => s.id === id).deletedAt, packId)) && (await B.textContent('[data-act=trash]')).includes('(1)'));
+  await B.click('nav [data-nav=compare]');
+  check('휴지통 업체는 비교표에서 제외', !(await B.textContent('#table')).includes('합성 용기 공장'));
+  const backupB = await makeBackupFile(B, 'b.json');
+  await A.click('nav [data-nav=backup]');
+  dialogs.length = 0;
+  await A.setInputFiles('input[data-import]', backupB);
+  await A.waitForFunction(() => document.querySelector('#status').textContent.includes('동기화 완료'));
+  const msgA = dialogs.find(m => m.includes('동기화 완료')) || '';
+  const aNames = await A.evaluate(() => window.__ggot.suppliers.filter(s => !s.deletedAt && !s.purged).map(s => s.name + '|' + s.booth));
+  check('B→A: B가 지운 업체가 A에서도 휴지통으로', await A.evaluate(id => !!window.__ggot.suppliers.find(s => s.id === id).deletedAt, packId), msgA);
+  check('B→A: B가 등록한 업체 추가', aNames.some(n => n.startsWith('金彤 합성 업체')));
+  check('B→A: 동시 수정은 사본, 내 기록 유지, 되돌아온 내 사본은 생략', aNames.filter(n => n.includes('A에서 수정')).length === 1 && aNames.some(n => n.includes('(가져온 사본)|B에서 수정')), JSON.stringify(aNames));
+  // 영구 삭제
+  await A.click('nav [data-nav=list]');
+  await A.click('[data-act=trash]');
+  await A.click('[data-act=emptyTrash]');
+  await A.waitForFunction(id => window.__ggot.suppliers.find(s => s.id === id).purged === true, packId);
+  check('휴지통 비우기 → 영구 삭제(동기화용 표시만 남음)', (await A.evaluate(id => { const s = window.__ggot.suppliers.find(x => x.id === id); return s.products.length === 0 && s.name === ''; }, packId)));
 
   // ── 6. 0.1(DB v1) 기존 데이터 이관
   console.log('6. 0.1 데이터 보존 이관');

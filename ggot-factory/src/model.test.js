@@ -131,3 +131,60 @@ test('0.3: 업종·구분·위험신호 필터', () => {
   assert.equal(filterRows(rows, { noFlags: true })[0].s.id, 'a1');
   assert.equal(filterRows(rows, { type: '튜브' }).length, 1);
 });
+
+import { vvCompare, bumpRev, isGone, purgeStub } from './model.js';
+
+const sup = (extra = {}) => ({ id: 's1', name: 'S', products: [{ id: 'p', types: [], effects: [], answers: {} }], photos: [], ...extra });
+
+test('0.4 동기화: 상대가 더 최신이면 갱신, 내가 최신이면 유지', () => {
+  const base = sup({ rev: { A: 3 } });
+  const theirs = sup({ rev: { A: 3, B: 2 }, booth: 'B가 수정' });
+  const r1 = mergeSuppliers([base], [theirs]);
+  assert.equal(r1.updated, 1); assert.equal(r1.suppliers.length, 1); assert.equal(r1.suppliers[0].booth, 'B가 수정');
+  assert.equal(r1.replaced[0], base);
+  const r2 = mergeSuppliers([theirs], [base]); // 오래된 파일을 다시 받아도
+  assert.equal(r2.kept, 1); assert.equal(r2.suppliers[0].booth, 'B가 수정');
+});
+
+test('0.4 동기화: 동시 수정은 덮어쓰지 않고 사본', () => {
+  const mine = sup({ rev: { A: 4 }, booth: 'A 수정' });
+  const theirs = sup({ rev: { A: 3, B: 1 }, booth: 'B 수정' });
+  assert.equal(vvCompare(mine.rev, theirs.rev), 'concurrent');
+  const r = mergeSuppliers([mine], [theirs]);
+  assert.equal(r.copies, 1); assert.equal(r.suppliers.find(x => x.id === 's1').booth, 'A 수정');
+  assert.equal(mergeSuppliers(r.suppliers, [theirs]).copies, 0, '같은 충돌 파일 재수신 시 사본 추가 없음');
+});
+
+test('0.4 동기화: 삭제(휴지통·영구삭제)가 상대에게 전달', () => {
+  const s = sup({ rev: { A: 2 } });
+  const trashed = sup({ rev: { A: 3 }, deletedAt: '2026-11-10T00:00:00Z' });
+  const r = mergeSuppliers([s], [trashed]);
+  assert.equal(r.removed, 1); assert.ok(isGone(r.suppliers[0]));
+  assert.equal(compareRows(r.suppliers).length, 0, '휴지통 업체는 비교표 제외');
+  const stub = purgeStub(trashed, 'A');
+  assert.deepEqual([stub.products, stub.photos, stub.purged, stub.rev.A], [[], [], true, 4]);
+  assert.equal(validate({ schemaVersion: 1, suppliers: [stub] }), true);
+  const r2 = mergeSuppliers([s], [stub]);
+  assert.equal(r2.removed, 1); assert.equal(r2.suppliers[0].purged, true);
+  // 상대가 지웠지만 내가 그 사이 고친 경우 → 내 기록 유지
+  const editedMine = sup({ rev: { A: 2, B: 5 }, booth: '내가 수정' });
+  assert.equal(mergeSuppliers([editedMine], [trashed]).suppliers[0].booth, '내가 수정');
+  // 처음 보는 삭제 기록은 추가 수로 세지 않음
+  assert.equal(mergeSuppliers([], [stub]).added, 0);
+});
+
+test('0.4 rev 검증과 증가', () => {
+  assert.deepEqual(bumpRev(undefined, 'A'), { A: 1 });
+  assert.deepEqual(bumpRev({ A: 1, B: 2 }, 'A'), { A: 2, B: 2 });
+  assert.equal(validate({ schemaVersion: 1, suppliers: [sup({ rev: { 'a"b': 1 } })] }), false);
+  assert.equal(validate({ schemaVersion: 1, suppliers: [sup({ rev: { A: -1 } })] }), false);
+  assert.equal(validate({ schemaVersion: 1, suppliers: [sup({ rev: { A: 2 } })] }), true);
+});
+
+test('0.4 동기화: 상대 기기에 생긴 "내 기록의 사본"이 되돌아오면 생략', () => {
+  const mine = sup({ rev: { A: 5 }, booth: 'A 최신' });
+  const echoed = sup({ id: 's1-copy-1234', copyOf: 's1', name: 'S (가져온 사본)', rev: { A: 4 }, booth: 'A 예전' });
+  assert.equal(mergeSuppliers([mine], [echoed]).suppliers.length, 1);
+  const theirsCopy = sup({ id: 's1-copy-9999', copyOf: 's1', name: 'S (가져온 사본)', rev: { A: 4, B: 1 }, booth: 'B 버전' });
+  assert.equal(mergeSuppliers([mine], [theirsCopy]).added, 1, '상대 변경이 담긴 사본은 유지');
+});
